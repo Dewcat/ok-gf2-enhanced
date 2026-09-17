@@ -93,24 +93,29 @@ jobs:
           path: pyappify_dist
       - uses: softprops/action-gh-release@v2
         with:
-          name: '${{ github.ref_name }} · Dewcat'
+          name: 'OK-GF2 Enhanced ${{ github.ref_name }}'
           prerelease: false
           make_latest: "true"
           fail_on_unmatched_files: true
           body: |
-            基于 AliceJump/ok-gf2 的 Dewcat fork 正式版。
+            ## 相比 v1.2.75 的更新
 
-            - 新增指定菜品：自动翻找并确认选中，未找到或未解锁时跳过吃饭。
-            - 优化活动层衔接，喝水或吃饭后可直接继续浇花。
-            - 修复栽培入口识别，支持概览页“前往”，按浇灌次数确认完成并跳过重复浇水。
-            - 修复自主循环没有确认弹窗时的误报和中断。
-            - 保留启动器更新检查修复、启动器复用及 Zlib 安装包压缩。
-            - 增加菜品选择、浇花和自主循环回归测试。
-            - 安装和更新来源为 Dewcat/ok-gf2。
+            - 新增免费礼包防误购：打开详情后重新核验价格为“免费”；遇到售罄、晶条礼包或识别不明确时跳过，领取后关闭详情，避免继续购买付费礼包。
+            - 修复安装版版本号显示：启动器未提供版本号时，从当前安装目录的 app.json 读取，源码运行仍显示 dev。
+            - 合入原仓巡录免费档领取修复（AliceJump/ok-gf2#69）：兼容两种入口，改为查找“一键领取／领取”，避免因找不到“沿途行动”而中断每日任务。
+            - 合入原仓加载帧误点修复（AliceJump/ok-gf2#60）：跳过剧情时，遇到空 OCR、“资源加载中”或百分比进度暂停右上角点击，减少推图结算卡死。
+            - 软件标题与发布名称统一使用 OK-GF2 Enhanced；内部版本与 Git 标签保持 v数字.数字.数字，增强版独立递增。
+            - 更新中英文 README 的增强版介绍，新增免费礼包防误购说明，并补充礼包、版本号、巡录和加载帧回归测试。
+
+            本版本不包含尚在开发中的异位冲突自动化。
+
+            ## 下载
 
             下载 `ok-gf2-win32-dewcat-setup-${{ github.ref_name }}.exe` 完整安装包（包含 Python 和依赖）。
             `online-setup` 为在线安装包，首次启动需要联网下载依赖。
             `SHA256SUMS.txt` 提供附件校验值。Source code 为源码，不是安装包。
 
             自动化检查已通过；本版本尚未完成游戏内完整流程验证。
+
+            [完整改动](https://github.com/Dewcat/ok-gf2-enhanced/compare/v1.2.75...v1.2.76)
           files: pyappify_dist/*
