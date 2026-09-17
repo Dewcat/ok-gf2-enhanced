@@ -52,6 +52,8 @@ jobs:
         run: node --test .github/actions/pyappify/build-config.test.js
       - name: Build Windows installers
         uses: ./.github/actions/pyappify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           version: ${{ steps.launcher.outputs.version }}
           use_release: ${{ steps.launcher.outputs.reuse_url }}
