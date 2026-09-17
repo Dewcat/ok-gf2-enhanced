@@ -3,8 +3,9 @@ import os
 import numpy as np
 from ok import Config
 
-version = os.environ.get("PYAPPIFY_APP_VERSION", "dev")
-# 安装版从启动器读取版本；直接运行源码时显示 dev。
+from src.app_version import get_app_version
+
+version = get_app_version()
 
 config = {
     "debug": False,  # Optional, default: False

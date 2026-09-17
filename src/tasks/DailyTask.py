@@ -732,6 +732,38 @@ class DailyTask(CommunityMixin, BaseGfTask):
         ):
             return
 
+    def close_gift_dialog(self):
+        # Top-right black X of the gift detail panel (2124, 408 at 2560x1600).
+        self.click(0.83, 0.255, after_sleep=1)
+        self.next_frame()
+        if self.ocr(box=self.box_of_screen(0.34, 0.275, 0.70, 0.315),
+                    match=re.compile(r'礼包|补给箱'), log=True):
+            raise RuntimeError('礼包详情未关闭，停止购物以避免误购')
+
+    def confirm_free_gift(self):
+        # Read the modal again after opening it. Background "免费" labels do
+        # not establish that the selected gift is free.
+        self.next_frame()
+        boxes = self.ocr(box=self.box_of_screen(0.15, 0.23, 0.85, 0.80), log=True)
+        controls = self.box_of_screen(0.28, 0.71, 0.72, 0.78)
+        price = self.box_of_screen(0.73, 0.275, 0.82, 0.32)
+        free = self.find_boxes(boxes, match=re.compile(r'^\s*免费\s*$'), boundary=price)
+        cancel = self.find_boxes(boxes, match=re.compile(r'^取消$'), boundary=controls)
+        buy = self.find_boxes(boxes, match=re.compile(r'^(购买|确认)$'), boundary=controls)
+        sold_out = self.find_boxes(boxes, match=re.compile(r'.*(已售罄|售罄|已购买|已领取).*'))
+        title = self.find_boxes(boxes, match=re.compile(r'.*晶条.*'),
+                                boundary=self.box_of_screen(0.34, 0.275, 0.70, 0.315))
+        if sold_out or title or not (free and cancel and len(buy) == 1):
+            self.log_info('无法确认礼包弹窗价格为免费，跳过购买')
+            self.close_gift_dialog()
+            return False
+        self.click(buy[0], after_sleep=1.5)
+        self.wait_pop_up(time_out=5, count=1)
+        # A successful free purchase can switch directly to a paid gift.
+        # Close that detail panel without searching for another purchase button.
+        self.close_gift_dialog()
+        return True
+
     def shopping(self):
         self.info_set('current_task', 'shopping')
         self.wait_click_ocr(match=['商城'], box=self.box.bottom_right, after_sleep=1.5, raise_if_not_found=True)
@@ -739,18 +771,16 @@ class DailyTask(CommunityMixin, BaseGfTask):
         self.wait_click_ocr(match=['周期礼包', '常驻礼包'], box=self.box.top, after_sleep=1, raise_if_not_found=True)
         if self.wait_click_ocr(match=['免费'], after_sleep=0.5, raise_if_not_found=False, time_out=1):
             self.log_info('found free item to buy')
-            self.wait_click_ocr(match=['确认', '购买'], box=self.box.bottom, after_sleep=1.5, raise_if_not_found=True)
-            self.wait_pop_up(time_out=5, count=1)
-            self.back()
-            self.sleep(1)
+            if not self.confirm_free_gift():
+                self.ensure_main()
+                return
         self.wait_click_ocr(match=["臻品礼包", "限时礼包"], box=self.box.top, after_sleep=0.5,
                             raise_if_not_found=True, time_out=2)
         if self.wait_click_ocr(match=['免费'], after_sleep=0.5, raise_if_not_found=False, time_out=1):
             self.log_info('found free item to buy')
-            if self.wait_click_ocr(match=['确认', '购买'], box=self.box.bottom, after_sleep=1.5,
-                                   raise_if_not_found=True):
-                self.back()
-                self.sleep(1)
+            if not self.confirm_free_gift():
+                self.ensure_main()
+                return
         if self.config.get('商店心愿单购买'):
             self.buy_others()
         self.ensure_main()
