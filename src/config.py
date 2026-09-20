@@ -4,8 +4,10 @@ import numpy as np
 from ok import Config
 
 from src.app_version import get_app_version
+from src.ui.update_notes import install_update_notes
 
 version = get_app_version()
+install_update_notes()
 
 config = {
     "debug": False,  # Optional, default: False
