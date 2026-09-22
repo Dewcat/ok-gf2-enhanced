@@ -90,6 +90,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             "尘烟": '需开启班组项',
             '领任务': '自动领取委托中的每日任务奖励',
             '大月卡': '先领取沿途行动奖励，再领取远航巡录奖励并确认；支持新一期巡录开启入口',
+            '拂晓之光补给包奖励': '远航巡录领取时自动选择的补给包奖励，默认数据链路',
             '探索领取': '自动领取边界推进探索区域的采集与派遣奖励'
         })
         self.default_config.update({
@@ -121,6 +122,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             '尘烟': True,
             '领任务': True,
             '大月卡': True,
+            '拂晓之光补给包奖励': '数据链路',
             '探索领取': True
         })
 
@@ -130,6 +132,10 @@ class DailyTask(CommunityMixin, BaseGfTask):
             下拉框配置
 
         """
+        self.config_type['拂晓之光补给包奖励'] = {
+            'type': 'drop_down',
+            'options': ['数据链路', '坍塌晶条', '增域存量条T2', '大容量内存条', '转录导体·序三', '萨狄斯金'],
+        }
         self.stamina_options = ['军备解析', '深度搜索', '决策构象', '定向']
         self.config_type["体力本"] = {'type': "drop_down", 'options': self.stamina_options}
 
@@ -140,6 +146,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
         """
         self.default_config_group.update({
             "社区每日": ["用户名", "密码"],
+            "大月卡": ["拂晓之光补给包奖励"],
             "活动自律": ["当前物资关卡名称"],
             "活动层": ["活动层喝水", "活动层吃饭", "活动层浇花"],
             "活动层喝水": ["喝水"],
@@ -171,13 +178,15 @@ class DailyTask(CommunityMixin, BaseGfTask):
             ('自动刷体力', self.battle),
             ('竞技场', self.arena),
             ('班组', self.guild),
-            ('领任务', self.claim_quest),
-            ('大月卡', self.xunlu),
             ('探索领取', self.explore_claim),
             ('闪耀星愿', self.star_wish),
+            # 完成其他任务后统一领取订单，随后领取依赖日活跃度的巡录奖励。
+            ('领任务', self.claim_quest),
+            ('大月卡', self.xunlu),
         ]
 
         failed_tasks = []
+        uncertain_tasks = []
         for key, func in tasks:
             # -------- 关键逻辑开始 --------
             if key != "ensure_main":
@@ -192,10 +201,14 @@ class DailyTask(CommunityMixin, BaseGfTask):
             if result is False:
                 self.log_info(f"任务 {key} 执行失败或未完成")
                 failed_tasks.append(key)
+            elif result == '待核查':
+                uncertain_tasks.append(key)
 
         if failed_tasks:
             self.log_info(f"以下任务未完成或失败: {failed_tasks}", notify=True)
-        else:
+        if uncertain_tasks:
+            self.log_info(f"以下任务结果待核查（未计为失败或成功）: {uncertain_tasks}", notify=True)
+        if not failed_tasks and not uncertain_tasks:
             self.log_info("日常完成!", notify=True)
 
     def explore_claim(self):
@@ -378,16 +391,57 @@ class DailyTask(CommunityMixin, BaseGfTask):
                 self.ensure_main(time_out=60)
         return completed
 
+    def _ensure_activity_panel(self):
+        panel_match = re.compile(
+            r'逸\s*趣\s*事\s*件|宜\s*居\s*值|栽\s*培|生\s*长\s*阶\s*段|浇\s*灌')
+        panel_box = self.box_of_screen(0.13, 0.16, 0.87, 0.82)
+
+        def is_open(timeout):
+            return bool(self.wait_ocr(match=panel_match, box=panel_box,
+                                      time_out=timeout, raise_if_not_found=False, log=True))
+
+        # 已打开时不要再次按 F2，以免把面板关闭。
+        if is_open(1):
+            self.log_info('活动层面板已打开')
+            return True
+        for attempt in range(2):
+            self.log_info(f'尝试打开活动层面板：发送 F2（第 {attempt + 1}/2 次）')
+            self.send_key('f2', down_time=0.15, after_sleep=1)
+            if is_open(4):
+                self.log_info('已确认 F2 面板打开')
+                return True
+        self.log_info('F2 后未检测到面板，尝试点击顶部 F2 入口')
+        if self.wait_click_ocr(match=re.compile(r'^F\s*2$'),
+                               box=self.box_of_screen(0.65, 0, 0.74, 0.12),
+                               time_out=2, raise_if_not_found=False, after_sleep=1, log=True):
+            if is_open(4):
+                self.log_info('点击入口后已确认活动层面板打开')
+                return True
+        self.log_error('活动层 F2 面板未打开：按键重试及入口点击未成功，跳过浇花')
+        return False
+
     def water_flowers(self):
         self.info_set('current_task', 'water_flowers')
-        self.send_key('f2', after_sleep=2)
-        # 图标可能被 OCR 合并为“上栽培”；只在页签区域做包含匹配。
-        if not self.wait_click_ocr(match=re.compile(r'栽\s*培'),
-                                   box=self.box_of_screen(0.30, 0.15, 0.42, 0.25),
-                                   time_out=10, raise_if_not_found=False, after_sleep=2, log=True):
-            self.log_error('未找到栽培入口，跳过浇花')
+        if not self._ensure_activity_panel():
             return False
         watering_match = re.compile(r'浇\s*灌')
+        # F2 可能直接选中栽培页；优先识别内容，避免依赖选中页签的黑字。
+        on_watering_page = self.wait_ocr(match=watering_match, box=self.box.right,
+                                         time_out=2, raise_if_not_found=False)
+        on_overview = False
+        if not on_watering_page:
+            on_overview = self.wait_ocr(match=re.compile(r'栽\s*培\s*天\s*数|生\s*长\s*阶\s*段'),
+                                        box=self.box_of_screen(0.36, 0.43, 0.85, 0.59),
+                                        time_out=2, raise_if_not_found=False, log=True)
+        if on_overview:
+            self.log_info('F2 已打开栽培概览，直接前往浇灌')
+        if not on_watering_page and not on_overview:
+            # 未进入栽培页时才切换页签，允许文字前带图标。
+            if not self.wait_click_ocr(match=re.compile(r'栽\s*培'),
+                                       box=self.box_of_screen(0.30, 0.15, 0.42, 0.25),
+                                       time_out=10, raise_if_not_found=False, after_sleep=2, log=True):
+                self.log_error('未找到栽培入口，跳过浇花')
+                return False
         if not self.wait_ocr(match=watering_match, box=self.box.right, time_out=3,
                              raise_if_not_found=False):
             # 部分界面先显示栽培概览，需点击“前往”才进入花盆页面。
@@ -491,6 +545,8 @@ class DailyTask(CommunityMixin, BaseGfTask):
 
     def xunlu(self):
         self.info_set('current_task', 'xunlu')
+        self.info_set('每日行动', '未检查')
+        self.info_set('巡录奖励', '未检查')
         box = self.wait_ocr(match=[re.compile(r'^巡录$')], box=self.box._xunlun, time_out=3, raise_if_not_found=False)
         if not box:
             self.log_info('未找到「巡录」入口，跳过')
@@ -512,50 +568,108 @@ class DailyTask(CommunityMixin, BaseGfTask):
             self.log_info('未确认进入每日行动页面，跳过领取')
             self.ensure_main()
             return False
-        # 单项“领取”也在右下半屏，只匹配底部的一键领取，避免仅领取一项就离开。
-        claimed = self.wait_click_ocr(match=[re.compile(r'^一键领取$')],
-                                      box=self.box_of_screen(0.70, 0.88, 1, 1), time_out=4,
+        # 分别确认行动里程和巡录道具，不能用行动按钮是否存在决定整项成败。
+        action_box = self.box_of_screen(0.70, 0.88, 1, 1)
+        claim_match = re.compile(r'^一\s*键\s*领\s*取$')
+        clicked = self.wait_click_ocr(match=[claim_match], box=action_box, time_out=4,
                                       raise_if_not_found=False, after_sleep=1)
-        if not claimed:
-            self.log_info('每日行动页面未找到领取按钮，可能已领取或尚未完成，需核查')
-        # 先收集行动里程，再回到顶部的远航巡录页领取等级/盈余奖励。
+        if clicked:
+            # 行动里程直接入账：确认仍在行动页，且原先可见的领取按钮消失。
+            if not self.wait_ocr(match=[re.compile(r'^每日行动$')], box=self.box.left,
+                                 time_out=3, raise_if_not_found=False):
+                action_result = '待核查'
+            elif self.wait_ocr(match=[claim_match], box=action_box,
+                               time_out=2, raise_if_not_found=False):
+                self.log_error('每日行动点击领取后按钮仍在，未确认领取完成')
+                action_result = False
+            else:
+                action_result = True
+        else:
+            action_result = self._xunlu_no_reward_status()
+        self._record_xunlu_result('每日行动', action_result)
+        # 先收集行动里程，再回到远航巡录页领取等级/盈余奖励。
         if not self.wait_click_ocr(match=[re.compile(r'^远航巡录$')],
                                    box=self.box_of_screen(0.25, 0, 0.65, 0.12),
                                    time_out=4, raise_if_not_found=False, after_sleep=1):
-            self.log_info('未能切换到远航巡录，奖励领取未完成')
+            self.log_error('未能切换到远航巡录，奖励领取未完成')
             self.ensure_main()
             return False
-        if not self.wait_click_ocr(match=[re.compile(r'^一键领取$')],
-                                   box=self.box.bottom_right, time_out=4,
-                                   raise_if_not_found=False, after_sleep=1):
-            self.log_info('远航巡录未找到一键领取，可能无可领取奖励，需核查')
-            self.ensure_main()
-            return False
-        # 弹窗截图可能经过裁剪，不能据此推断标题在游戏全屏中的位置。
-        # 实机全屏 OCR 能稳定识别标题，右下区域精确匹配确认可避开取消/解锁。
-        reward_title = self.box_of_screen(0, 0, 1, 1)
-        if not self.wait_ocr(match=[re.compile(r'^领取奖励$')], box=reward_title,
-                             time_out=4, raise_if_not_found=False, log=True):
-            self.log_info('未识别到领取奖励弹窗，未确认巡录奖励领取')
-            self.ensure_main()
-            return False
-        # 弹窗还包含“前往解锁”，只点击下方右侧的“确认”。
-        if not self.wait_click_ocr(match=[re.compile(r'^确认$')],
-                                   box=self.box.bottom_right,
-                                   time_out=4, raise_if_not_found=False, after_sleep=1, log=True):
-            self.log_info('未找到领取奖励确认按钮，巡录奖励未完成')
-            self.ensure_main()
-            return False
-        if self.wait_ocr(match=[re.compile(r'^领取奖励$')], box=reward_title,
-                         time_out=2, raise_if_not_found=False, log=True):
-            self.log_info('确认后领取奖励弹窗仍未关闭，巡录奖励未完成')
-            self.ensure_main()
-            return False
-        # 确认后还有奖励展示页，点击底部中央空白处关闭，再退出巡录。
-        self.sleep(1)
-        self.click(0.5, 0.95, after_sleep=1)
+        if self.wait_click_ocr(match=[claim_match], box=self.box.bottom_right, time_out=4,
+                               raise_if_not_found=False, after_sleep=1):
+            reward_result = self._claim_xunlu_rewards()
+        else:
+            # 必须仍在巡录页；不能把错误页面上的按钮缺失当作已领取。
+            if not self.wait_ocr(match=[re.compile(r'^大奖预览$|^通行证$')],
+                                 box=self.box_of_screen(0, 0, 1, 1),
+                                 time_out=3, raise_if_not_found=False):
+                self.log_error('未确认巡录奖励页面，无法检查领取状态')
+                reward_result = False
+            else:
+                reward_result = self._xunlu_no_reward_status()
+        self._record_xunlu_result('巡录奖励', reward_result)
         self.ensure_main()
-        return bool(claimed)
+        if action_result is False or reward_result is False:
+            return False
+        if action_result == '待核查' or reward_result == '待核查':
+            return '待核查'
+        return True
+
+    def _xunlu_no_reward_status(self):
+        # 仅接受明确的整体状态；单条任务的“已领取”不能证明全部领完。
+        if self.wait_ocr(match=[re.compile(r'^\s*(?:已全部领取|全部已领取|暂无可领取奖励|无可领取奖励)\s*$')],
+                         box=self.box.bottom_right, time_out=2, raise_if_not_found=False, log=True):
+            return True
+        return '待核查'
+
+    def _record_xunlu_result(self, name, result):
+        status = ('领取已确认／已无可领取奖励' if result is True else
+                  '执行失败' if result is False else '待核查：缺少领取结果证据')
+        self.info_set(name, status)
+        self.log_info(f'{name}：{status}')
+
+    def _claim_xunlu_rewards(self):
+        # 自选补给包可能直接出现，也可能跟在普通奖励确认之后。
+        pack_title = re.compile(r'^拂晓之光补给包$')
+        reward_title = re.compile(r'^领取奖励$')
+        obtained_title = re.compile(r'^获得道具$')
+        obtained = False
+        for _ in range(8):
+            titles = self.wait_ocr(match=[pack_title, reward_title, obtained_title],
+                                   box=self.box_of_screen(0, 0, 1, 1),
+                                   time_out=4, raise_if_not_found=False, log=True)
+            if not titles:
+                if obtained:
+                    return True
+                self.log_info('未看到获得道具，巡录领取结果待核查')
+                return '待核查'
+            if any(obtained_title.search(title.name) for title in titles):
+                obtained = True
+                self.log_info('巡录已显示获得道具，确认奖励到账')
+                self.click(0.5, 0.95, after_sleep=1)
+                continue
+            if any(pack_title.search(title.name) for title in titles):
+                reward = self.config.get('拂晓之光补给包奖励', '数据链路')
+                if not reward:
+                    self.log_error('未配置拂晓之光补给包奖励，请手动选择')
+                    return False
+                reward_match = re.compile(r'^\s*' + r'\s*'.join(re.escape(c) for c in reward) + r'\s*$')
+                if not self.wait_click_ocr(match=[reward_match],
+                                           box=self.box_of_screen(0.20, 0.34, 0.80, 0.53),
+                                           time_out=4, raise_if_not_found=False, after_sleep=0.5):
+                    self.log_error(f'补给包未找到配置奖励「{reward}」，请手动选择')
+                    return False
+                button = re.compile(r'^开启$')
+                # 仅匹配选择弹窗底部右侧的“开启”。
+                button_box = self.box_of_screen(0.51, 0.67, 0.71, 0.76)
+            else:
+                button = re.compile(r'^确认$')
+                button_box = self.box.bottom_right
+            if not self.wait_click_ocr(match=[button], box=button_box,
+                                       time_out=4, raise_if_not_found=False, after_sleep=1, log=True):
+                self.log_error('未找到巡录奖励弹窗操作按钮，领取未完成')
+                return False
+        self.log_error('巡录奖励弹窗连续出现或未关闭，请手动检查')
+        return False
 
     def _box_center_ratio(self, box):
         return (
