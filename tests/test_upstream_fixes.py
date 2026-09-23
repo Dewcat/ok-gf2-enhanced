@@ -45,13 +45,14 @@ class UpstreamFixTest(unittest.TestCase):
         task.ensure_main.assert_called_once()
 
     def test_xunlu_both_entry_forms_open_actions_before_claiming(self):
-        ns = methods('DailyTask.py', {'xunlu'})
+        ns = methods('DailyTask.py', {'xunlu', '_switch_xunlu_rewards_page'})
         for preview in [False, True]:
             with self.subTest(preview=preview):
                 task = Mock()
                 task.box_of_screen.side_effect = lambda *coords: coords
-                task.wait_ocr.side_effect = [[Mock()], True, True, False]
+                task.wait_ocr.side_effect = [[Mock()], True, True, False, True, False]
                 task.wait_click_ocr.side_effect = [preview, True, True, True, True]
+                task._switch_xunlu_rewards_page.side_effect = lambda: ns['_switch_xunlu_rewards_page'](task)
                 task._claim_xunlu_rewards.return_value = True
                 self.assertTrue(ns['xunlu'](task))
                 task.ensure_main.assert_called_once()
@@ -62,7 +63,7 @@ class UpstreamFixTest(unittest.TestCase):
                 self.assertTrue(calls[2].kwargs['match'][0].fullmatch('一键领取'))
                 self.assertFalse(calls[2].kwargs['match'][0].fullmatch('领取'))
                 self.assertEqual((0.70, 0.88, 1, 1), calls[2].kwargs['box'])
-                self.assertEqual('^远航巡录$', calls[3].kwargs['match'][0].pattern)
+                self.assertTrue(calls[3].kwargs['match'][0].fullmatch('远航巡录'))
                 self.assertEqual((0.25, 0, 0.65, 0.12), calls[3].kwargs['box'])
                 task._claim_xunlu_rewards.assert_called_once()
                 for call in task.wait_click_ocr.call_args_list:
