@@ -88,6 +88,49 @@ class SelectFoodTest(unittest.TestCase):
         selector.assert_called_once()
         task.wait_click_ocr.assert_not_called()
 
+    def run_drink_flow(self, task, fallback=True):
+        return namespace['do_food_flow'](
+            task, enter_func=Mock(), entry_match='茶歇一刻', main_btn='制作',
+            second_btn='确认', skip_end_match=['饮品加成'],
+            fallback_page_match=re.compile('茶歇一刻|饮品') if fallback else None)
+
+    def test_fallback_enters_drink_page_and_continues(self):
+        task = Mock()
+        task.wait_ocr.side_effect = [False, True, True]
+        self.assertTrue(self.run_drink_flow(task))
+        task.send_key.assert_called_once_with('f', after_sleep=1)
+        task.click_with_key.assert_not_called()
+        task.back.assert_not_called()
+        self.assertEqual('制作', task.wait_click_ocr.call_args_list[0].kwargs['match'])
+
+    def test_fallback_wrong_page_exits_without_making_anything(self):
+        task = Mock()
+        task.wait_ocr.side_effect = [False, False]
+        self.assertFalse(self.run_drink_flow(task))
+        task.send_key.assert_called_once_with('f', after_sleep=1)
+        task.back.assert_called_once_with(after_sleep=2)
+        task.wait_click_ocr.assert_not_called()
+
+    def test_fallback_drink_page_without_make_button_exits(self):
+        task = Mock()
+        task.wait_ocr.side_effect = [False, True, False]
+        self.assertFalse(self.run_drink_flow(task))
+        task.back.assert_called_once_with(after_sleep=2)
+        task.wait_click_ocr.assert_not_called()
+
+    def test_recognized_entry_does_not_press_f(self):
+        task = Mock()
+        task.wait_ocr.side_effect = [True, True]
+        self.assertTrue(self.run_drink_flow(task))
+        task.send_key.assert_not_called()
+        task.click_with_key.assert_called_once()
+
+    def test_other_food_flow_does_not_use_drink_fallback(self):
+        task = Mock()
+        task.wait_ocr.return_value = False
+        self.assertFalse(self.run_drink_flow(task, fallback=False))
+        task.send_key.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

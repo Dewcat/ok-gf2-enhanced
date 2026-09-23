@@ -12,13 +12,14 @@ method = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
               and n.name == '_claim_xunlu_rewards')
 namespace = {'re': re}
 methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in
-           ('_claim_xunlu_rewards', 'xunlu', '_xunlu_no_reward_status', '_record_xunlu_result', 'run')]
+           ('_claim_xunlu_rewards', 'xunlu', '_switch_xunlu_rewards_page', '_xunlu_no_reward_status', '_record_xunlu_result', 'run')]
 exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), 'exec'), namespace)
 claim = namespace['_claim_xunlu_rewards']
 
 
 class XunluRewardsTest(unittest.TestCase):
-    def task(self, pages, reward='数据链路', missing=False, stuck=False, show_obtained=True):
+    def task(self, pages, reward='数据链路', missing=False, stuck=False, show_obtained=True,
+             next_buttons=0, missing_after=None):
         task = Mock()
         task.config = {}
         task.box_of_screen.side_effect = lambda *bounds: bounds
@@ -29,18 +30,22 @@ class XunluRewardsTest(unittest.TestCase):
         def ocr(**kwargs):
             return [SimpleNamespace(name=pages[0])] if pages else []
         def click(**kwargs):
+            nonlocal next_buttons
             pattern = kwargs['match'][0]
             if pattern.search(reward):
-                if missing:
+                if missing or (missing_after is not None and clicks.count(reward) >= missing_after):
                     return False
                 clicks.append(reward)
                 return True
-            expected = '开启' if pages[0] == '拂晓之光补给包' else '确认'
+            expected = ('下一个' if next_buttons else '开启') if pages[0] == '拂晓之光补给包' else '确认'
             if not pattern.search(expected):
                 return False
             clicks.append(expected)
             if not stuck:
-                pages.pop(0)
+                if expected == '下一个':
+                    next_buttons -= 1
+                else:
+                    pages.pop(0)
             return True
         task.click.side_effect = lambda *args, **kwargs: pages.pop(0)
         task.wait_ocr.side_effect = ocr
@@ -64,6 +69,28 @@ class XunluRewardsTest(unittest.TestCase):
         task, clicks = self.task(['拂晓之光补给包'], missing=True)
         self.assertFalse(claim(task))
         self.assertEqual([], clicks)
+
+    def test_next_pages_reselect_reward_before_opening(self):
+        for count in (1, 3):
+            with self.subTest(next_buttons=count):
+                task, clicks = self.task(['拂晓之光补给包'], next_buttons=count)
+                self.assertIs(True, claim(task))
+                self.assertEqual(['数据链路', '下一个'] * count + ['数据链路', '开启'], clicks)
+
+    def test_missing_reward_on_next_page_does_not_open(self):
+        task, clicks = self.task(['拂晓之光补给包'], next_buttons=1, missing_after=1)
+        self.assertFalse(claim(task))
+        self.assertEqual(['数据链路', '下一个'], clicks)
+
+    def test_next_button_without_obtained_does_not_report_success(self):
+        task, clicks = self.task(['拂晓之光补给包'], next_buttons=1, show_obtained=False)
+        self.assertEqual('待核查', claim(task))
+        self.assertEqual(['数据链路', '下一个', '数据链路', '开启'], clicks)
+
+    def test_stuck_next_button_is_bounded(self):
+        task, clicks = self.task(['拂晓之光补给包'], next_buttons=1, stuck=True)
+        self.assertFalse(claim(task))
+        self.assertEqual(['数据链路', '下一个'] * 8, clicks)
 
     def test_custom_reward(self):
         task, clicks = self.task(['拂晓之光补给包'], reward='大容量内存条')
@@ -93,12 +120,41 @@ class XunluRewardsTest(unittest.TestCase):
         self.assertEqual(8, len(clicks))
 
 
+class XunluPageSwitchTest(unittest.TestCase):
+    def task(self, results):
+        task = Mock()
+        task.box_of_screen.side_effect = lambda *bounds: bounds
+        task.wait_ocr.side_effect = results
+        return task
+
+    def test_retries_when_click_does_not_switch_page(self):
+        task = self.task([False, True, False])
+        self.assertTrue(namespace['_switch_xunlu_rewards_page'](task))
+        self.assertEqual(2, task.wait_click_ocr.call_count)
+
+    def test_still_on_action_page_does_not_count_as_success(self):
+        task = self.task([True, True, True, False])
+        self.assertTrue(namespace['_switch_xunlu_rewards_page'](task))
+        self.assertEqual(2, task.wait_click_ocr.call_count)
+
+    def test_stuck_page_stops_after_three_attempts(self):
+        task = self.task([False, False, False])
+        self.assertFalse(namespace['_switch_xunlu_rewards_page'](task))
+        self.assertEqual(3, task.wait_click_ocr.call_count)
+
+    def test_success_does_not_repeat_click(self):
+        task = self.task([True, False])
+        self.assertTrue(namespace['_switch_xunlu_rewards_page'](task))
+        task.wait_click_ocr.assert_called_once()
+
+
 class XunluOutcomeTest(unittest.TestCase):
     def task(self, action=True, reward=True, page_ok=True):
         task = Mock()
         task.box_of_screen.side_effect = lambda *bounds: bounds
-        # optional new-season entry, daily tab, daily claim, reward tab, reward claim
-        task.wait_click_ocr.side_effect = [False, True, False, True, True]
+        # optional new-season entry, daily tab, daily claim, reward claim
+        task.wait_click_ocr.side_effect = [False, True, False, True]
+        task._switch_xunlu_rewards_page.return_value = page_ok
         task.wait_ocr.return_value = True
         task._xunlu_no_reward_status.return_value = action
         task._claim_xunlu_rewards.return_value = reward
@@ -114,6 +170,14 @@ class XunluOutcomeTest(unittest.TestCase):
     def test_confirmed_no_rewards_is_success(self):
         task = self.task()
         self.assertIs(True, namespace['xunlu'](task))
+
+    def test_failed_switch_never_claims_rewards(self):
+        task = self.task(page_ok=False)
+        self.assertIs(False, namespace['xunlu'](task))
+        task._claim_xunlu_rewards.assert_not_called()
+        self.assertEqual(3, task.wait_click_ocr.call_count)
+        task._record_xunlu_result.assert_any_call('巡录奖励', False)
+        task.ensure_main.assert_called_once()
 
     def test_real_failure_takes_precedence(self):
         for action, reward in [(False, True), (True, False), ('待核查', False)]:
@@ -141,13 +205,13 @@ class XunluOutcomeTest(unittest.TestCase):
 
     def test_absent_reward_button_is_uncertain_without_evidence(self):
         task = self.task(action='待核查')
-        task.wait_click_ocr.side_effect = [False, True, False, True, False]
+        task.wait_click_ocr.side_effect = [False, True, False, False]
         self.assertEqual('待核查', namespace['xunlu'](task))
         task._claim_xunlu_rewards.assert_not_called()
 
     def test_wrong_reward_page_is_failure(self):
         task = self.task()
-        task.wait_click_ocr.side_effect = [False, True, False, True, False]
+        task.wait_click_ocr.side_effect = [False, True, False, False]
         task.wait_ocr.side_effect = [True, True, False]
         self.assertIs(False, namespace['xunlu'](task))
 
