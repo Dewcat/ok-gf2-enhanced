@@ -4,6 +4,7 @@ from ok import Logger, find_boxes_by_name, Box
 from src.tasks.BaseGfTask import BaseGfTask, pop_ups, stamina_re, map_re, parse_time_option
 from src.tasks.CommunityClient import CommunityMixin
 from src.image.hsv_config import HSVRange as hR
+from src.image.version_sign_in import find_sign_in_icon, sign_in_layout, claimable_days
 
 logger = Logger.get_logger(__name__)
 
@@ -65,6 +66,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             ),
             '社区每日': '自动完成社区每日任务（需填写用户名和密码）',
             '邮件': '自动领取邮件中的所有奖励',
+            '版本签到': '按日历图标识别版本七日签到，领取当天专访许可，不依赖活动标题',
             '情报/战前补给': '自动领取活动页面中的情报补给奖励',
             '战前补给': '自动领取活动页面中的战前补给奖励',
             '闪耀星愿': '自动完成活动页面中的闪耀星愿关卡',
@@ -104,6 +106,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             '指定菜品': '',
             "社区每日": False,
             '邮件': True,
+            '版本签到': True,
             '情报和战前补给': True,
             '闪耀星愿': False,
             '活动自律': True,
@@ -171,6 +174,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             )),
             ('邮件', self.mail),
             ('情报和战前补给', self.activities),
+            ('版本签到', self.version_sign_in),
             ('活动自律', self.activity),
             ('活动层', self.free_time_layer),
             ('公共区/调度室', self.gongongqu),
@@ -347,6 +351,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
     def free_time_layer(self):
         self.info_set('current_task', 'free_time_layer')
         completed = True
+        uncertain = False
         enabled_steps = [i for i, key in enumerate(('活动层喝水', '活动层吃饭', '活动层浇花'))
                          if self.config.get(key, True)] + [3]
         reuse_layer = False
@@ -355,6 +360,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
                 self.wait_click_ocr(match='活动层', box=self.box.right, time_out=2, raise_if_not_found=True)
             reuse_layer = False
             food_completed = False
+            water_completed = False
             if self.is_free_layer():
                 if i == 0:
                     food_completed = self.do_food_flow(
@@ -379,27 +385,67 @@ class DailyTask(CommunityMixin, BaseGfTask):
                         before_main=self.select_food
                     )
                 elif i == 2:
-                    if not self.water_flowers():
+                    water_completed = self.water_flowers()
+                    if not water_completed:
                         completed = False
                 else:
-                    self.send_key("f2", after_sleep=2)
-                    self.wait_click_ocr(match=re.compile('领取'), box=self.box_of_screen(0.151, 0.772, 0.385, 0.883),
-                                        time_out=10, raise_if_not_found=False, log=True)
-                    self.wait_pop_up(count=1)
+                    reward_result = self.claim_activity_progress()
+                    if reward_result is False:
+                        completed = False
+                    elif reward_result == '待核查':
+                        uncertain = True
             else:
                 self.log_error('没检测到活动层页面')
                 completed = False
             if i in (0, 1) and not food_completed:
                 completed = False
             next_step = enabled_steps[position + 1] if position + 1 < len(enabled_steps) else None
-            # 走路任务之间仍需重置起点；只有紧接浇花时才复用当前活动层。
-            if i in (0, 1) and food_completed and next_step == 2:
+            # 走路任务之间重置起点；浇花和最终领奖可复用当前活动层。
+            if ((i in (0, 1) and food_completed and next_step in (2, 3))
+                    or (i == 2 and water_completed and next_step == 3)):
                 reuse_layer = self.is_free_layer(time_out=3)
                 if reuse_layer:
-                    self.log_info('留在活动层，继续执行浇花')
+                    self.log_info('留在活动层，继续' + ('浇花' if next_step == 2 else '领取逸趣进度奖励'))
             if not reuse_layer:
                 self.ensure_main(time_out=60)
-        return completed
+        return False if not completed else ('待核查' if uncertain else True)
+
+    def claim_activity_progress(self):
+        self.info_set('逸趣进度奖励', '检查中')
+        if not self._ensure_activity_panel():
+            self.info_set('逸趣进度奖励', '未打开 F2 面板')
+            return False
+        # F2 会记住栽培等页签，必须明确切回逸趣事件。
+        if not self.wait_click_ocr(match=re.compile(r'逸\s*趣\s*事\s*件'),
+                                   box=self.box_of_screen(.14, .15, .25, .25),
+                                   time_out=4, after_sleep=1, raise_if_not_found=False):
+            self.info_set('逸趣进度奖励', '未找到逸趣事件页签')
+            return False
+        progress_match = re.compile(r'逸\s*趣\s*导\s*算\s*进\s*度')
+        progress_box = self.box_of_screen(.15, .25, .39, .39)
+        claim_box = self.box_of_screen(.151, .735, .39, .83)
+        if not self.wait_ocr(match=progress_match, box=progress_box, time_out=4,
+                             raise_if_not_found=False):
+            self.info_set('逸趣进度奖励', '待核查：未确认逸趣导算进度页面')
+            return '待核查'
+        if not self.wait_click_ocr(match=re.compile(r'^(?:一\s*)?键\s*领\s*取$'), box=claim_box,
+                                   time_out=3, after_sleep=1, raise_if_not_found=False):
+            self.info_set('逸趣进度奖励', '未检测到一键领取，跳过')
+            return
+        # 按钮可能在领完后保留；不能仅凭点击或文字存在判断成功。
+        if self.wait_ocr(match=pop_ups, box=self.box.bottom, time_out=4, raise_if_not_found=False):
+            self.wait_pop_up(time_out=5, count=1)
+            if self.wait_ocr(match=progress_match, box=progress_box, time_out=3,
+                             raise_if_not_found=False):
+                self.info_set('逸趣进度奖励', '领取已确认')
+                self.log_info('逸趣导算进度奖励：一键领取已确认')
+                return True
+        if self.wait_ocr(match=re.compile(r'已全部领取|暂无可领取|无可领取奖励'),
+                         box=claim_box, time_out=1, raise_if_not_found=False):
+            self.info_set('逸趣进度奖励', '暂无可领取奖励')
+            return True
+        self.info_set('逸趣进度奖励', '待核查：未检测到领取结果')
+        return '待核查'
 
     def _ensure_activity_panel(self):
         panel_match = re.compile(
@@ -427,7 +473,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             if is_open(4):
                 self.log_info('点击入口后已确认活动层面板打开')
                 return True
-        self.log_error('活动层 F2 面板未打开：按键重试及入口点击未成功，跳过浇花')
+        self.log_error('活动层 F2 面板未打开：按键重试及入口点击未成功')
         return False
 
     def water_flowers(self):
@@ -482,6 +528,79 @@ class DailyTask(CommunityMixin, BaseGfTask):
         # 关闭栽培页面后，由活动层共用的 ensure_main 处理退出确认。
         self.back(after_sleep=2)
         return completed
+
+    def version_sign_in(self):
+        self.info_set('current_task', '版本签到')
+        self.info_set('版本签到', '检查中')
+        try:
+            self.wait_click_ocr(match=['活动'], box=self.box._activities, after_sleep=1,
+                                raise_if_not_found=True)
+            self.wait_click_ocr(match=['活动'], box=self.box_of_screen(.035, .10, .23, .30),
+                                time_out=3, after_sleep=.5, raise_if_not_found=True)
+            self.scroll_relative(.16, .65, 15)
+            self.sleep(.6)
+            # A bounded scan also covers entries below the visible menu.
+            for page in range(5):
+                self.next_frame()
+                point = find_sign_in_icon(self.frame)
+                if point:
+                    self.click(*point, after_sleep=1)
+                    break
+                if page < 4:
+                    self.scroll_relative(.16, .65, -3)
+                    self.sleep(.6)
+            else:
+                self.info_set('版本签到', '未找到签到入口，跳过')
+                return
+
+            layout = self._version_sign_in_layout()
+            if layout is None:
+                self.info_set('版本签到', '待核查：未确认七日专访许可页面')
+                return '待核查'
+            self.next_frame()
+            candidates = claimable_days(self.frame, layout)
+            if candidates == []:
+                self.info_set('版本签到', '未检测到可领取卡片，跳过')
+                return
+            if candidates is None or len(candidates) != 1:
+                self.info_set('版本签到', '待核查：可领取卡片不明确')
+                return '待核查'
+            day, x, y = candidates[0]
+            self.click(x, y, after_sleep=1)
+            # wait_pop_up does not return evidence; observe the popup explicitly.
+            popup = self.wait_ocr(match=pop_ups, box=self.box.bottom, time_out=5,
+                                  raise_if_not_found=False)
+            if popup:
+                self.wait_pop_up(time_out=5, count=1)
+            after_layout = self._version_sign_in_layout()
+            self.next_frame()
+            after = claimable_days(self.frame, after_layout) if after_layout else None
+            if popup and after == []:
+                self.info_set('版本签到', f'第 {day:02d} 天领取已确认')
+                self.log_info(f'版本签到：第 {day:02d} 天专访许可领取已确认')
+                return True
+            self.info_set('版本签到', '待核查：点击后未确认奖励弹窗及卡片状态变化')
+            return '待核查'
+        finally:
+            self.ensure_main()
+
+    def _version_sign_in_layout(self):
+        area = self.box_of_screen(.30, .30, .95, .80)
+        boxes = self.wait_ocr(box=area, time_out=3, raise_if_not_found=False)
+        tickets = [b for b in (boxes or []) if '专访许可' in b.name]
+        if len(tickets) < 3:
+            return None
+        layout = sign_in_layout(boxes)
+        if layout is None:
+            return None
+        x, y, pitch = layout
+        # Reward labels must line up under the inferred day row.
+        if not (.04 * self.width < pitch < .12 * self.width):
+            return None
+        if sum(abs((b.y + b.height / 2) - (y + 1.60 * pitch)) < .22 * pitch
+               for b in tickets) < 3:
+            return None
+        return layout
 
     def activities(self):
         self.info_set('current_task', 'activity_stamina')

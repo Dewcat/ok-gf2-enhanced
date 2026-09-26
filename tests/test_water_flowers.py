@@ -104,6 +104,7 @@ class ActivityLayerRoutingTest(unittest.TestCase):
 
         task.do_food_flow.side_effect = food
         task.water_flowers.side_effect = lambda: events.append('water') or True
+        task.claim_activity_progress.side_effect = lambda: events.append('claim') or True
         task.ensure_main.side_effect = lambda **kw: events.append('exit')
         return task, events
 
@@ -118,7 +119,10 @@ class ActivityLayerRoutingTest(unittest.TestCase):
                         groups[-1].append('water')
                     else:
                         groups.append(['water'])
-                groups.append(['claim'])
+                if groups:
+                    groups[-1].append('claim')
+                else:
+                    groups.append(['claim'])
                 expected = [event for group in groups for event in ['enter', *group, 'exit']]
                 self.assertEqual(expected, events)
 
@@ -127,8 +131,24 @@ class ActivityLayerRoutingTest(unittest.TestCase):
             with self.subTest(food_ok=food_ok, can_reuse=can_reuse):
                 task, events = self.make_task(True, False, True, food_ok, can_reuse)
                 free_time_layer(task)
-                self.assertEqual(['enter', 'drink', 'exit', 'enter', 'water', 'exit',
-                                  'enter', 'claim', 'exit'], events)
+                expected = ['enter', 'drink', 'exit', 'enter', 'water']
+                if not can_reuse:
+                    expected += ['exit', 'enter']
+                self.assertEqual(expected + ['claim', 'exit'], events)
+
+    def test_reward_failure_and_uncertainty_propagate(self):
+        for result in (False, '待核查'):
+            task, _ = self.make_task(False, False, False)
+            task.claim_activity_progress.side_effect = None
+            task.claim_activity_progress.return_value = result
+            self.assertEqual(result, free_time_layer(task))
+            task.ensure_main.assert_called_once()
+
+    def test_food_failure_is_not_hidden_by_uncertain_rewards(self):
+        task, _ = self.make_task(True, False, False, food_ok=False)
+        task.claim_activity_progress.side_effect = None
+        task.claim_activity_progress.return_value = '待核查'
+        self.assertFalse(free_time_layer(task))
 
 
 class WaterFlowersTest(unittest.TestCase):
