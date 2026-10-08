@@ -4,7 +4,6 @@ from ok import Logger, find_boxes_by_name, Box
 from src.tasks.BaseGfTask import BaseGfTask, pop_ups, stamina_re, map_re, parse_time_option
 from src.tasks.CommunityClient import CommunityMixin
 from src.image.hsv_config import HSVRange as hR
-from src.image.version_sign_in import find_sign_in_icon, sign_in_layout, claimable_days
 
 logger = Logger.get_logger(__name__)
 
@@ -66,7 +65,6 @@ class DailyTask(CommunityMixin, BaseGfTask):
             ),
             '社区每日': '自动完成社区每日任务（需填写用户名和密码）',
             '邮件': '自动领取邮件中的所有奖励',
-            '版本签到': '按日历图标识别版本七日签到，领取当天专访许可，不依赖活动标题',
             '情报/战前补给': '自动领取活动页面中的情报补给奖励',
             '战前补给': '自动领取活动页面中的战前补给奖励',
             '闪耀星愿': '自动完成活动页面中的闪耀星愿关卡',
@@ -106,7 +104,6 @@ class DailyTask(CommunityMixin, BaseGfTask):
             '指定菜品': '',
             "社区每日": False,
             '邮件': True,
-            '版本签到': True,
             '情报和战前补给': True,
             '闪耀星愿': False,
             '活动自律': True,
@@ -174,7 +171,6 @@ class DailyTask(CommunityMixin, BaseGfTask):
             )),
             ('邮件', self.mail),
             ('情报和战前补给', self.activities),
-            ('版本签到', self.version_sign_in),
             ('活动自律', self.activity),
             ('活动层', self.free_time_layer),
             ('公共区/调度室', self.gongongqu),
@@ -528,79 +524,6 @@ class DailyTask(CommunityMixin, BaseGfTask):
         # 关闭栽培页面后，由活动层共用的 ensure_main 处理退出确认。
         self.back(after_sleep=2)
         return completed
-
-    def version_sign_in(self):
-        self.info_set('current_task', '版本签到')
-        self.info_set('版本签到', '检查中')
-        try:
-            self.wait_click_ocr(match=['活动'], box=self.box._activities, after_sleep=1,
-                                raise_if_not_found=True)
-            self.wait_click_ocr(match=['活动'], box=self.box_of_screen(.035, .10, .23, .30),
-                                time_out=3, after_sleep=.5, raise_if_not_found=True)
-            self.scroll_relative(.16, .65, 15)
-            self.sleep(.6)
-            # A bounded scan also covers entries below the visible menu.
-            for page in range(5):
-                self.next_frame()
-                point = find_sign_in_icon(self.frame)
-                if point:
-                    self.click(*point, after_sleep=1)
-                    break
-                if page < 4:
-                    self.scroll_relative(.16, .65, -3)
-                    self.sleep(.6)
-            else:
-                self.info_set('版本签到', '未找到签到入口，跳过')
-                return
-
-            layout = self._version_sign_in_layout()
-            if layout is None:
-                self.info_set('版本签到', '待核查：未确认七日专访许可页面')
-                return '待核查'
-            self.next_frame()
-            candidates = claimable_days(self.frame, layout)
-            if candidates == []:
-                self.info_set('版本签到', '未检测到可领取卡片，跳过')
-                return
-            if candidates is None or len(candidates) != 1:
-                self.info_set('版本签到', '待核查：可领取卡片不明确')
-                return '待核查'
-            day, x, y = candidates[0]
-            self.click(x, y, after_sleep=1)
-            # wait_pop_up does not return evidence; observe the popup explicitly.
-            popup = self.wait_ocr(match=pop_ups, box=self.box.bottom, time_out=5,
-                                  raise_if_not_found=False)
-            if popup:
-                self.wait_pop_up(time_out=5, count=1)
-            after_layout = self._version_sign_in_layout()
-            self.next_frame()
-            after = claimable_days(self.frame, after_layout) if after_layout else None
-            if popup and after == []:
-                self.info_set('版本签到', f'第 {day:02d} 天领取已确认')
-                self.log_info(f'版本签到：第 {day:02d} 天专访许可领取已确认')
-                return True
-            self.info_set('版本签到', '待核查：点击后未确认奖励弹窗及卡片状态变化')
-            return '待核查'
-        finally:
-            self.ensure_main()
-
-    def _version_sign_in_layout(self):
-        area = self.box_of_screen(.30, .30, .95, .80)
-        boxes = self.wait_ocr(box=area, time_out=3, raise_if_not_found=False)
-        tickets = [b for b in (boxes or []) if '专访许可' in b.name]
-        if len(tickets) < 3:
-            return None
-        layout = sign_in_layout(boxes)
-        if layout is None:
-            return None
-        x, y, pitch = layout
-        # Reward labels must line up under the inferred day row.
-        if not (.04 * self.width < pitch < .12 * self.width):
-            return None
-        if sum(abs((b.y + b.height / 2) - (y + 1.60 * pitch)) < .22 * pitch
-               for b in tickets) < 3:
-            return None
-        return layout
 
     def activities(self):
         self.info_set('current_task', 'activity_stamina')
