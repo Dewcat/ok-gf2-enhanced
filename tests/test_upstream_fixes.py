@@ -62,7 +62,7 @@ class UpstreamFixTest(unittest.TestCase):
                 self.assertEqual(task.box.top, calls[1].kwargs['box'])
                 self.assertTrue(calls[2].kwargs['match'][0].fullmatch('一键领取'))
                 self.assertFalse(calls[2].kwargs['match'][0].fullmatch('领取'))
-                self.assertEqual((0.70, 0.88, 1, 1), calls[2].kwargs['box'])
+                self.assertEqual((0.50, 0.50, 1, 1), calls[2].kwargs['box'])
                 self.assertTrue(calls[3].kwargs['match'][0].fullmatch('远航巡录'))
                 self.assertEqual((0.25, 0, 0.65, 0.12), calls[3].kwargs['box'])
                 task._claim_xunlu_rewards.assert_called_once()
