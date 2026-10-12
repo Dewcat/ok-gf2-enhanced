@@ -100,8 +100,6 @@ class SupplyScreen:
     def tr(self, message):
         return message
 
-    def is_adb(self):
-        return False
 
     def move_relative(self, x, y):
         self.hover_mouse = (int(self.width*x), int(self.height*y))

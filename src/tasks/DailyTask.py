@@ -528,8 +528,6 @@ class DailyTask(CommunityMixin, BaseGfTask):
 
     def activities(self):
         self.info_set('current_task', 'activity_stamina')
-        if self.is_adb():
-            return self._collect_supply_activities()
         # 整个补给流程只恢复一次原窗口，避免每次滚动都来回切换。
         return run_in_window(self.hwnd.hwnd, self._collect_supply_activities)
 
@@ -575,10 +573,6 @@ class DailyTask(CommunityMixin, BaseGfTask):
         # Unity 滚动列表需要真实鼠标和悬停事件都在列表内。
         # Genshin 后台滚轮会恢复鼠标，必须保持前台直到滚动帧更新。
         x, y = .12, .60
-        if self.is_adb():
-            self.scroll_relative(x, y, count)
-            self.sleep(.6)
-            return
 
         def scroll_with_hover():
             self.move_relative(x, y)
@@ -591,9 +585,8 @@ class DailyTask(CommunityMixin, BaseGfTask):
                           int(self.width*x), int(self.height*y), sleep_time=.2)
 
     def _ensure_supply_foreground(self):
-        if not self.is_adb():
-            # 此函数内部会检查当前前台窗口；只有焦点被打断才重新激活。
-            active_and_send_mouse_delta(self.hwnd.hwnd, only_activate=True)
+        # 只有焦点被打断时才重新激活游戏窗口。
+        active_and_send_mouse_delta(self.hwnd.hwnd, only_activate=True)
 
     def _claim_supply_activity(self, reward_activity):
         page_match = re.compile(r'^\s*' + r'\s*'.join(map(re.escape, reward_activity)) + r'\s*$')
