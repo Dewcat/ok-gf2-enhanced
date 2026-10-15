@@ -51,9 +51,9 @@ class DailyTask(CommunityMixin, BaseGfTask):
                 '（设置 → 其他 → 自动战斗设置），开启后勾选本项'
             ),
             '当前物资关卡名称': (
-                '活动自律中当前大活动的名称\n'
-                '例：铸碑者的黎明'
+                '活动自律中当前大活动的名称\n例：静默突触；多个活动用半角连字符分隔'
             ),
+            '物资篇章名称': '填写物资入口的完整篇章名，如转篇；多个篇章用半角连字符分隔，与活动名称一一对应；留空则跳过',
             '用户名': '使用账户密码方式登录网页社区时(不是直接的手机号或邮箱)\n account 请求负载中的 account_name 的值',
             '密码': '使用账户密码方式登录网页社区时(不是直接的密码)\n account 请求负载中的 passwd 的值',
             '喝水': (
@@ -70,8 +70,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
             '战前补给': '自动领取活动页面中的战前补给奖励',
             '闪耀星愿': '自动完成活动页面中的闪耀星愿关卡',
             '活动自律': (
-                '自动进入限时开启活动并挑战物资关卡\n'
-                '关卡名称在"当前物资关卡名称"中配置'
+                '自动进入限时开启活动并挑战物资关卡\n分别填写活动名称和物资篇章名称，按完整名称进入指定篇章'
             ),
             '活动层': '活动层总开关；按下方独立开关执行喝水、吃饭、浇花，并领取奖励',
             '活动层喝水': '独立控制喝水任务，关闭后跳过喝水',
@@ -97,6 +96,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
         self.default_config.update({
             '已确认启用游戏内全局自动功能': False,
             '当前物资关卡名称': '铸碑者的黎明',
+            "物资篇章名称": "",
             '体力本': "军备解析",
             '用户名': "",
             '密码': "",
@@ -148,7 +148,7 @@ class DailyTask(CommunityMixin, BaseGfTask):
         self.default_config_group.update({
             "社区每日": ["用户名", "密码"],
             "大月卡": ["拂晓之光补给包奖励"],
-            "活动自律": ["当前物资关卡名称"],
+            "活动自律": ["当前物资关卡名称", "物资篇章名称"],
             "活动层": ["活动层喝水", "活动层吃饭", "活动层浇花"],
             "活动层喝水": ["喝水"],
             "活动层吃饭": ["吃饭", "指定菜品"],
@@ -850,67 +850,55 @@ class DailyTask(CommunityMixin, BaseGfTask):
 
         return filtered
 
-    def _chapter_click_order(self, box):
-        if re.search("下[篇筒]", box.name):
-            return 0
-        if re.search("中[篇筒]", box.name):
-            return 1
-        if re.search("上[篇筒]", box.name):
-            return 2
-        return 3
+    def _activity_chapter_pattern(self, name, chapter):
+        # 名称按用户输入匹配，不把初篇/转篇映射为上篇/下篇。
+        return re.compile(rf'^\s*{re.escape(name)}\s*[·・：:]\s*{re.escape(chapter)}\s*$')
 
     def activity(self):
         activity_wuzi_names = [name.strip() for name in str(self.config.get('当前物资关卡名称')).split("-")]
+        chapter_names = [name.strip() for name in str(self.config.get('物资篇章名称') or '').split('-')]
+        if not all(activity_wuzi_names) or not all(chapter_names) or len(activity_wuzi_names) != len(chapter_names):
+            self.log_info('请填写活动名称和物资篇章名称；多个活动与篇章需一一对应，跳过活动自律')
+            return
         self.info_set('current_task', 'activity')
         if to_activity_page := self.wait_click_ocr(match=['限时开启'], box=self.box.top_right, after_sleep=2,
                                                    raise_if_not_found=False,
                                                    time_out=4):
             if activities := self.wait_ocr(match=['开启中'], box=self.box.bottom_left, time_out=4):
-                activity_count = 0
-                for activity in activities:
+                for activity_count, activity in enumerate(activities):
                     self.ensure_main()
                     self.click(to_activity_page, after_sleep=2)
                     self.click(activity)
                     if activity_count >= len(activity_wuzi_names):
-                        activity_count -= 1
+                        break
                     name_re = activity_wuzi_names[activity_count]
-                    chapter_re = re.compile(rf"{re.escape(name_re)}[·・：][上下中][篇筒]")
+                    chapter_re = self._activity_chapter_pattern(name_re, chapter_names[activity_count])
                     to_clicks = self.wait_ocr_until_count(
                         match=[chapter_re],
                         box=None,
-                        min_count=2,
+                        min_count=1,
                         timeout=5,
                         settle_time=2,
                         log=True
                     )
                     if to_clicks:
-                        up = None
-                        middle = None
-                        down = None
-                        for click in to_clicks:
-                            if re.search("上[篇筒]", click.name):
-                                up = click
-                            elif re.search("中[篇筒]", click.name):
-                                middle = click
-                            elif re.search("下[篇筒]", click.name):
-                                down = click
-
-                        chapter_boxes = [box for box in (up, middle, down) if box]
+                        chapter_boxes = to_clicks
                         wuzi_boxes = self.wait_ocr(
-                            match=re.compile('物资'), box=None, time_out=4, settle_time=2, log=True
+                            match=re.compile('物资'), box=None, time_out=4, settle_time=2, log=True,
+                            raise_if_not_found=False
                         )
                         click_boxes = self._filter_boxes_near_candidates(chapter_boxes, wuzi_boxes) if wuzi_boxes else []
-
+                        locked_boxes = self.ocr(match=re.compile('未开启|未开放|未解锁'), box=None)
+                        locked_chapters = self._filter_boxes_near_candidates(chapter_boxes, locked_boxes or [])
+                        click_boxes = [box for box in click_boxes if box not in locked_chapters]
                         if not click_boxes:
-                            click_boxes = chapter_boxes
-
-                        click_boxes = sorted(click_boxes, key=self._chapter_click_order)
-
-                        for chapter in click_boxes:
-                            self.click(chapter, after_sleep=0.2)
-                    elif to_clicks := self.wait_ocr(match=['活动战役', re.compile('物资')], box=self.box.bottom,
-                                                    raise_if_not_found=False, time_out=4, settle_time=2, log=True):
-                        self.click(to_clicks, after_sleep=2)
+                            self.log_info('未找到指定章节已开放的物资入口，跳过活动自律')
+                            continue
+                        # 只点击选中的章节，避免沿用旧画面的坐标再次点击上篇。
+                        self.click(click_boxes[0], after_sleep=2)
+                    else:
+                        self.log_info('未找到指定章节，跳过活动自律')
+                        continue
                     if to_clicks:
                         self.sleep(2)
                         if wu_zi := self.ocr(match=re.compile('物资'), box=self.box.bottom_right):
