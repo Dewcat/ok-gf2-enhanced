@@ -23,8 +23,7 @@ inputs:
   build_exe_only:
     description: if enabled, will only build the build the exe and you can use the output exe-path to sign it. and the PyAppify action again to use the signed exe.
     required: false
-    type: boolean
-    default: false
+    default: 'false'
 
 outputs:
   dist-path:
